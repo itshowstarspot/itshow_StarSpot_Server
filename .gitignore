@@ -2,4 +2,7 @@
 backend/node_modules/
 
 # 내 개인 비밀번호 파일 제외 (보안)
+node_modules/
+backend/node_modules/
+.env
 backend/.env

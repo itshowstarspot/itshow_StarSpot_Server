@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Star Spot - 대중교통 경로 찾기</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; line-height: 1.6; }
+        .container { max-width: 500px; margin: 0 auto; border: 1px solid #ccc; padding: 20px; border-radius: 10px; }
+        input { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
+        button { width: 100%; padding: 10px; background-color: #007bff; color: white; border: none; cursor: pointer; border-radius: 5px; }
+        button:hover { background-color: #0056b3; }
+        #result { margin-top: 20px; background: #f4f4f4; padding: 15px; border-radius: 5px; white-space: pre-wrap; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>대중교통 경로 검색</h2>
+    
+    <label>출발지 (위도, 경도):</label>
+    <input type="text" id="startPos" value="126.926493082245, 37.555134" placeholder="경도, 위도 순서">
+
+    <label>목적지 (위도, 경도):</label>
+    <input type="text" id="endPos" value="127.126937, 37.500428" placeholder="경도, 위도 순서">
+
+    <button onclick="getRoute()">경로 찾기</button>
+
+    <div id="result">결과가 여기에 표시됩니다.</div>
+</div>
+
+<script>
+    async function getRoute() {
+        const resultDiv = document.getElementById('result');
+        const startPos = document.getElementById('startPos').value.split(',');
+        const endPos = document.getElementById('endPos').value.split(',');
+
+        resultDiv.innerText = "경로 검색 중...";
+
+        try {
+            // 로컬 백엔드 서버(:5000)로 요청
+            const response = await fetch("http://localhost:5000/api/transit/routes", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    startX: startPos[0].trim(),
+                    startY: startPos[1].trim(),
+                    endX: endPos[0].trim(),
+                    endY: endPos[1].trim(),
+                    lang: 0,
+                    format: "json",
+                    count: 1
+                })
+            });
+
+            const data = await response.json();
+            
+            if (response.ok) {
+                // 결과 데이터 중 첫 번째 경로의 요약 정보를 보여주기
+                const route = data.metaData.plan.itineraries[0];
+                const totalTime = Math.round(route.totalTime / 60);
+                const fare = route.fare.regular.totalFare;
+                
+                resultDiv.innerHTML = `
+                    ✅ <strong>검색 성공!</strong><br>
+                    ⏱ 총 소요시간: 약 ${totalTime}분<br>
+                    💰 총 요금: ${fare}원<br><br>
+                    <small>상세 데이터(JSON):</small><br>
+                    ${JSON.stringify(data.metaData.plan.itineraries[0].legs, null, 2)}
+                `;
+            } else {
+                resultDiv.innerText = "에러 발생: " + data.error;
+            }
+        } catch (error) {
+            console.error(error);
+            resultDiv.innerText = "서버에 연결할 수 없습니다. 백엔드 서버가 켜져 있는지 확인하세요";
+        }
+    }
+</script>
+
+</body>
+</html>
