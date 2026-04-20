@@ -1,0 +1,5 @@
+# 라이브러리 폴더 제외 (파일 폭탄 방지)
+backend/node_modules/
+
+# 내 개인 비밀번호 파일 제외 (보안)
+backend/.env
