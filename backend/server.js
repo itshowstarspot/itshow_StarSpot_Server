@@ -1,8 +1,10 @@
-const db = require('./src/config/db'); // DB 연결 코드 불러오기
+// const db = require('./src/config/db'); // DB 연결 코드 불러오기
 const express = require('express');
 const cors = require('cors');
 const os = require('os'); // 내 컴퓨터의 네트워크 정보를 가져오는 도구
 const app = express();
+const axios = require('axios');
+require('dotenv').config();
 
 // 라우터 불러오기
 const userRoute = require('./src/routes/userRoute');
@@ -13,6 +15,27 @@ app.use(express.json());
 
 // 2. API 경로 설정
 app.use('/api/users', userRoute);
+
+// TMAP 대중교통 API
+app.post('/api/transit/routes', async (req, res) => {
+    try {
+        const response = await axios.post(
+            "https://apis.openapi.sk.com/transit/routes",
+            req.body,
+            {
+                headers: {
+                    'accept': 'application/json',
+                    'content-type': 'application/json',
+                    'appKey': process.env.TMAP_APPKEY
+                }
+            }
+        );
+        res.json(response.data);
+    } catch (error) {
+        console.error("티맵 호출 에러:", error.message);
+        res.status(500).json({ error: "티맵 API 연결 실패" });
+    }
+});
 
 // 3. 기본 홈 경로
 app.get('/', (req, res) => {
