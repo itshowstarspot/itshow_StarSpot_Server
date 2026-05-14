@@ -1,8 +1,8 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const os = require('os');
 const axios = require('axios');
-require('dotenv').config();
 
 // 라우터 불러오기
 const userRoute = require('./src/routes/userRoute');
@@ -16,7 +16,7 @@ app.use(express.json());
 // 2. API 경로 설정 (여기서 /api/users와 userRoute를 연결)
 app.use('/api/users', userRoute);
 
-// TMAP 대중교통 API (친구 작업분)
+// TMAP 대중교통 API
 app.post('/api/transit/routes', async (req, res) => {
     try {
         const response = await axios.post(
@@ -30,7 +30,30 @@ app.post('/api/transit/routes', async (req, res) => {
                 }
             }
         );
-        res.json(response.data);
+
+        const plan = response.data.metaData.plan;
+        const itinery = plan.itineraries[0]; // 첫 번째 경로만 추출
+
+        const summary = {
+            totalTime: Math.round(itinery.totalTime / 60) + "분",
+            totalFare: itinery.fare.regular.totalFare + "원",
+            path: itinery.legs.map(leg => {
+                const time = Math.round(leg.sectionTime / 60); // 해당 구간 소요 시간(분)
+                const destination = leg.end.name;
+
+                if (leg.mode === "WALK") {
+                    return `🚶 도보 ${time}분 (${destination}까지)`;
+                } else if (leg.mode === "BUS") {
+                    return `🚍 ${leg.route} 이용 | ${time}분 소요 (${leg.passStopList.stations.length}개 정류장 이동, ${destination} 하차)`;
+                } else if (leg.mode === "SUBWAY") {
+                    return `🚇 ${leg.route} 이용 | ${time}분 소요 (${destination} 하차)`;
+                }
+                return `${leg.mode} | ${time}분 소요`;
+            })
+        };
+
+        res.json(summary);
+
     } catch (error) {
         console.error("티맵 호출 에러:", error.message);
         res.status(500).json({ error: "티맵 API 연결 실패" });
