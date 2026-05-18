@@ -62,3 +62,26 @@ exports.getAllPosts = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+// 5. 유저 프로필 조회 (추가)
+exports.getUserProfile = async (req, res) => {
+    const { email } = req.params;
+    try {
+        const [rows] = await db.execute('SELECT email, nickname, favorite_idol FROM users WHERE email = ?', [email]);
+        if (rows.length === 0) return res.status(404).json({ message: "유저를 찾을 수 없습니다." });
+        res.json(rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// 6. 최애 아이돌 수정 (추가)
+exports.updateFavoriteIdol = async (req, res) => {
+    const { email, favorite_idol } = req.body;
+    try {
+        await db.execute('UPDATE users SET favorite_idol = ? WHERE email = ?', [favorite_idol, email]);
+        res.json({ success: true, message: "최애 아이돌이 업데이트되었습니다!" });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};

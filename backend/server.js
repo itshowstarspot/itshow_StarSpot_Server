@@ -13,6 +13,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+app.use(express.urlencoded({ extended: true })); // form-data(텍스트) 해석용
+app.use('/uploads', express.static('uploads')); // uploads 폴더를 외부에서 접근 가능하게 설정
+
+app.use('/api/users', userRoute);
+
 // 2. API 경로 설정 (여기서 /api/users와 userRoute를 연결)
 app.use('/api/users', userRoute);
 
