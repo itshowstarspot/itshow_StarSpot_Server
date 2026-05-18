@@ -55,27 +55,63 @@ exports.createPost = async (req, res) => {
 
 // 4. 지도 데이터 조회 (필터링 기능 포함)
 // GET /api/users/posts 또는 /api/users/posts?idol=뉴진스
+// 아이돌 필터 + 이메일 필터 둘 다 가능하게!
 exports.getPosts = async (req, res) => {
-    const { idol } = req.query; // URL 파라미터에서 idol 값을 가져옴
-    console.log("필터링 요청 아이돌:", idol); 
-
+    const { idol, email } = req.query; // 이제 email도 쿼리에서 받아와
+    
     try {
-        let sql = 'SELECT * FROM posts';
+        let sql = 'SELECT * FROM posts WHERE 1=1'; // 조건 추가를 쉽게 하기 위한 트릭
         let params = [];
 
-        // 아이돌 필터링 조건이 있을 경우 WHERE 절 추가
         if (idol) {
-            sql += ' WHERE idol_name = ?';
+            sql += ' AND idol_name = ?';
             params.push(idol);
         }
+        if (email) {
+            sql += ' AND user_email = ?';
+            params.push(email);
+        }
 
-        sql += ' ORDER BY created_at DESC'; // 최신순 정렬
-
+        sql += ' ORDER BY created_at DESC';
         const [rows] = await db.execute(sql, params);
         res.status(200).json(rows);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "데이터 조회 중 서버 에러 발생" });
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// 게시글 수정
+exports.updatePost = async (req, res) => {
+    const { id } = req.params; // URL에서 게시글 번호(id)를 가져옴
+    const { content, location_name } = req.body; // 수정할 내용들
+
+    try {
+        const sql = 'UPDATE posts SET content = ?, location_name = ? WHERE id = ?';
+        const [result] = await db.execute(sql, [content, location_name, id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: "수정할 게시글을 찾을 수 없습니다." });
+        }
+        res.json({ success: true, message: "게시글이 성공적으로 수정되었습니다." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+//게시글 삭제
+exports.deletePost = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const sql = 'DELETE FROM posts WHERE id = ?';
+        const [result] = await db.execute(sql, [id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: "삭제할 게시글을 찾을 수 없습니다." });
+        }
+        res.json({ success: true, message: "게시글이 삭제되었습니다." });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 };
 

@@ -32,4 +32,11 @@ router.patch('/update-idol', userController.updateFavoriteIdol);
 router.post('/posts', upload.single('photo'), userController.createPost); 
 router.get('/posts', userController.getPosts);
 
+// 6. 게시글 수정 & 삭제
 module.exports = router;
+
+// 게시글 수정 (PATCH 또는 PUT 사용)
+router.patch('/posts/:id', userController.updatePost);
+
+// 게시글 삭제 (DELETE 사용)
+router.delete('/posts/:id', userController.deletePost);
