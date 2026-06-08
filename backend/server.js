@@ -4,6 +4,8 @@ const cors = require('cors');
 const os = require('os');
 const axios = require('axios');
 const mysql = require('mysql2/promise');
+const multer = require('multer');
+const path = require('path');
 
 // 라우터 불러오기
 const userRoute = require('./src/routes/userRoute');
@@ -14,8 +16,8 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-app.use(express.urlencoded({ extended: true })); // form-data(텍스트) 해석용
-app.use('/uploads', express.static('uploads')); // uploads 폴더를 외부에서 접근 가능하게 설정
+app.use(express.urlencoded({ extended: true }));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
@@ -27,8 +29,60 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
-// 2. API 경로 설정 (여기서 /api/users와 userRoute를 연결)
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/'); 
+  },
+  filename: function (req, file, cb) {
+    // 파일 이름이 겹치지 않게 타임스탬프를 결합합니다 (예: 1717834_photo.png)
+    cb(null, `${Date.now()}_${file.originalname}`); 
+  }
+});
+const upload = multer({ storage: storage });
+
+// 2. API 경로 설정
 app.use('/api/users', userRoute);
+
+// 인생네컷 업로드 및 DB 주소 저장 API
+app.post('/api/life4cut/upload', upload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "업로드된 사진 파일이 없습니다." });
+    }
+
+    const imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+
+    // 2. 프론트엔드가 FormData로 보낸 후기 데이터들을 변수에 담기
+    // (프론트엔드에서 던내주는 키 이름과 req.body.뒤의 이름을 맞춰주세요!)
+    const { userEmail, nickname, content, locationName, latitude, longitude } = req.body;
+
+    const [result] = await pool.query(
+      `INSERT INTO posts 
+        (user_email, nickname, content, location_name, latitude, longitude, photo_path) 
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userEmail || null, 
+        nickname || '익명', 
+        content || '', 
+        locationName || null, 
+        latitude ? Number(latitude) : null, 
+        longitude ? Number(longitude) : null, 
+        imageUrl
+      ]
+    );
+
+    res.status(200).json({ 
+      success: true, 
+      message: "성지순례 후기 및 인생네컷 사진 등록 성공!", 
+      postId: result.insertId, // 생성된 게시글의 고유 ID
+      url: imageUrl 
+    });
+
+  } catch (error) {
+    console.error("인생네컷 후기 등록 에러:", error);
+    res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
 
 // TMAP 대중교통 API
 app.post('/api/transit/routes', async (req, res) => {

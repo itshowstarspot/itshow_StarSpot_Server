@@ -1,9 +1,4 @@
-# 라이브러리 폴더 제외 (파일 폭탄 방지)
-backend/node_modules/
-# 내 개인 비밀번호 파일 제외 (보안)
 node_modules/
-backend/node_modules/
 .env
-backend/.env
-# 업로드된 파일 제외 (보안 및 저장 공간 관리)
 uploads/
+*.log
