@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const os = require('os');
 const axios = require('axios');
+const mysql = require('mysql2/promise');
 
 // 라우터 불러오기
 const userRoute = require('./src/routes/userRoute');
@@ -16,7 +17,15 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true })); // form-data(텍스트) 해석용
 app.use('/uploads', express.static('uploads')); // uploads 폴더를 외부에서 접근 가능하게 설정
 
-app.use('/api/users', userRoute);
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'star_spot',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
 // 2. API 경로 설정 (여기서 /api/users와 userRoute를 연결)
 app.use('/api/users', userRoute);
@@ -63,6 +72,33 @@ app.post('/api/transit/routes', async (req, res) => {
         console.error("티맵 호출 에러:", error.message);
         res.status(500).json({ error: "티맵 API 연결 실패" });
     }
+});
+
+// 지도 전용 성지 장소 조회 API
+app.get('/api/spots', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM spots');
+    
+    const formattedSpots = rows.map(spot => ({
+      id: spot.id,
+      groupName: spot.group_name,
+      memberName: spot.member_name,
+      placeName: spot.place_name,
+      category: spot.category,
+      description: spot.description,
+      latitude: Number(spot.latitude), 
+      longitude: Number(spot.longitude),
+      operatingHours: spot.operating_hours,
+      holiday: spot.holiday,
+      address: spot.address,
+      imageUrl: spot.image_url
+    }));
+
+    res.status(200).json(formattedSpots);
+  } catch (error) {
+    console.error('DB 조회 중 에러 발생:', error);
+    res.status(500).json({ message: '서버 에러가 발생했습니다.' });
+  }
 });
 
 app.get('/', (req, res) => {
