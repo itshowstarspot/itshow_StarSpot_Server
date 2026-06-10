@@ -15,6 +15,7 @@ exports.signup = async (req, res) => {
 };
 
 // 2. 로그인
+// 2. 로그인 (최애 아이돌 데이터 누락 버그 수정 완결본)
 exports.login = async (req, res) => {
     const { email, password } = req.body;
     try {
@@ -24,10 +25,15 @@ exports.login = async (req, res) => {
         const isMatch = await bcrypt.compare(password, rows[0].password);
         if (!isMatch) return res.status(400).json({ message: "비밀번호가 틀렸습니다." });
 
+        // 🌟 [핵심 수정] 로그인 성공 시 DB에 저장되어 있던 favorite_idol 정보도 반드시 프론트에 함께 내려줍니다.
         res.json({ 
             success: true, 
             message: "로그인 성공!", 
-            user: { email: rows[0].email, nickname: rows[0].nickname } 
+            user: { 
+                email: rows[0].email, 
+                nickname: rows[0].nickname,
+                favorite_idol: rows[0].favorite_idol // 👈 이 한 줄이 없어서 모달이 뚫렸던 것입니다!
+            } 
         });
     } catch (err) {
         res.status(500).json({ error: err.message });

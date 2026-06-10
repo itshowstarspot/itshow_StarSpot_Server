@@ -45,12 +45,11 @@ app.use('/api/users', userRoute);
 // 2. API 경로 설정
 app.use('/api/users', userRoute);
 
-// 🌟 [백엔드 server.js 프로필 라우터 수정] id와 email 복합 대응 안전 쿼리
+// 🌟 [백엔드 server.js 프로필 라우터 최종 수정] 닉네임 + 최애 아이돌 동시 대응 복합 쿼리
 app.put('/api/users/profile', async (req, res) => {
   try {
-    const { userId, email, favorite_idol } = req.body;
+    const { userId, email, favorite_idol, nickname } = req.body;
 
-    // 둘 다 없다면 팅겨내기
     if (!userId && !email) {
       return res.status(400).json({ success: false, message: "유저 식별 정보(id 또는 email)가 없습니다." });
     }
@@ -58,31 +57,31 @@ app.put('/api/users/profile', async (req, res) => {
     let query = '';
     let queryParams = [];
 
-    // 1. 고유 번호(id)가 명확히 넘어왔을 때의 처리
+    // 🌟 상황별로 유연하게 쿼리를 짜기 위해 조건문 구성 (닉네임과 최애 둘 다 혹은 각각 들어올 수 있도록 처리)
+    // 여기서는 마이페이지/홈에서 각각 호출하므로 넘어온 값만 SET 하거나 둘 다 SET 하도록 동적 쿼리 스타일로 구성합니다.
     if (userId) {
-      query = 'UPDATE users SET favorite_idol = ? WHERE id = ?';
-      queryParams = [favorite_idol, userId];
-    } 
-    // 2. 만약 프론트 로컬스토리지에 id가 누락되고 email만 있을 때의 처리 (예: test9@gmail.com)
-    else {
-      query = 'UPDATE users SET favorite_idol = ? WHERE email = ?';
-      queryParams = [favorite_idol, email];
+      query = 'UPDATE users SET favorite_idol = COALESCE(?, favorite_idol), nickname = COALESCE(?, nickname) WHERE id = ?';
+      queryParams = [favorite_idol || null, nickname || null, userId];
+    } else {
+      query = 'UPDATE users SET favorite_idol = COALESCE(?, favorite_idol), nickname = COALESCE(?, nickname) WHERE email = ?';
+      queryParams = [favorite_idol || null, nickname || null, email];
     }
 
     const [result] = await pool.query(query, queryParams);
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: "해당 유저를 찾을 수 없어 업데이트에 실패했습니다." });
+      return res.status(404).json({ success: false, message: "해당 유저를 찾을 수 없습니다." });
     }
 
     res.status(200).json({ 
       success: true, 
-      message: "DB에 최애 아이돌 등록 성공! ⭐",
-      favoriteIdol: favorite_idol 
+      message: "DB 프로필(닉네임/최애) 업데이트 성공! ⭐",
+      favoriteIdol: favorite_idol,
+      nickname: nickname
     });
 
   } catch (error) {
-    console.error("최애 아이돌 DB 업데이트 에러:", error);
+    console.error("프로필 DB 업데이트 에러:", error);
     res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
   }
 });
@@ -369,6 +368,36 @@ function getLocalIp() {
 }
 
 const myIp = getLocalIp();
+
+// 🌟 [백엔드 server.js 추가] 회원 탈퇴 (계정 삭제) API
+app.delete('/api/users/:idOrEmail', async (req, res) => {
+  try {
+    const { idOrEmail } = req.params;
+
+    if (!idOrEmail) {
+      return res.status(400).json({ success: false, message: "유저 식별 정보가 없습니다." });
+    }
+
+    let query = '';
+    // 숫자로만 이루어져 있으면 id(PK), 그 외에는 email로 판단하여 삭제
+    if (/^\d+$/.test(idOrEmail)) {
+      query = 'DELETE FROM users WHERE id = ?';
+    } else {
+      query = 'DELETE FROM users WHERE email = ?';
+    }
+
+    const [result] = await pool.query(query, [idOrEmail]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "삭제할 유저를 찾을 수 없습니다." });
+    }
+
+    res.status(200).json({ success: true, message: "회원 탈퇴가 정상적으로 처리되었습니다." });
+  } catch (error) {
+    console.error("회원 탈퇴 DB 에러:", error);
+    res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
 
 app.listen(PORT, () => {
     console.log(`================================================`);
