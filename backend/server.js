@@ -42,6 +42,51 @@ const upload = multer({ storage: storage });
 // 2. API 경로 설정
 app.use('/api/users', userRoute);
 
+// 2. API 경로 설정
+app.use('/api/users', userRoute);
+
+// 🌟 [백엔드 server.js 프로필 라우터 수정] id와 email 복합 대응 안전 쿼리
+app.put('/api/users/profile', async (req, res) => {
+  try {
+    const { userId, email, favorite_idol } = req.body;
+
+    // 둘 다 없다면 팅겨내기
+    if (!userId && !email) {
+      return res.status(400).json({ success: false, message: "유저 식별 정보(id 또는 email)가 없습니다." });
+    }
+
+    let query = '';
+    let queryParams = [];
+
+    // 1. 고유 번호(id)가 명확히 넘어왔을 때의 처리
+    if (userId) {
+      query = 'UPDATE users SET favorite_idol = ? WHERE id = ?';
+      queryParams = [favorite_idol, userId];
+    } 
+    // 2. 만약 프론트 로컬스토리지에 id가 누락되고 email만 있을 때의 처리 (예: test9@gmail.com)
+    else {
+      query = 'UPDATE users SET favorite_idol = ? WHERE email = ?';
+      queryParams = [favorite_idol, email];
+    }
+
+    const [result] = await pool.query(query, queryParams);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "해당 유저를 찾을 수 없어 업데이트에 실패했습니다." });
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: "DB에 최애 아이돌 등록 성공! ⭐",
+      favoriteIdol: favorite_idol 
+    });
+
+  } catch (error) {
+    console.error("최애 아이돌 DB 업데이트 에러:", error);
+    res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
+
 // 인생네컷 업로드 및 DB 주소 저장 API
 app.post('/api/life4cut/upload', upload.single('photo'), async (req, res) => {
   try {
