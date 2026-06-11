@@ -48,6 +48,7 @@ router.post('/posts', upload.single('photo'), async (req, res) => {
         `;
         await db.execute(postQuery, [userEmail, spotId, title || '', content || '', photo]);
 
+        // 💡 후기를 등록할 때도 VARCHAR 고유 코드가 들어갈 수 있도록 바인딩합니다.
         const visitQuery = `
             INSERT INTO visit_history (user_email, spot_id, visit_date, created_at) 
             VALUES (?, ?, NOW(), NOW())
@@ -66,7 +67,7 @@ router.get('/posts', async (req, res) => {
     const userEmail = req.query.userEmail || req.query.email; 
 
     try {
-        let query = `
+        const query = `
             SELECT 
                 p.id, p.user_email, p.spot_id, p.title, p.content, p.photo_url,
                 DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i') AS date,
@@ -100,40 +101,13 @@ router.get('/favorites', userController.getUserFavorites);
 router.post('/favorites', userController.addUserFavorite); 
 router.delete('/favorites', userController.deleteUserFavorite);
 
-// [방문 기록 조회] 특정 유저(이메일)의 성지순례 방문 리스트 가져오기
-router.get('/visit-history/:userEmail', async (req, res) => {
-    const { userEmail } = req.params;
-    // ⭕ userRoute.js 파일 내부에 수정 반영할 올바른 코드 블록
-const query = `
-    SELECT 
-        p.id, p.user_email, p.content, p.photo_path AS photo_url,
-        DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i') AS date,
-        s.place_name, s.member_name
-    FROM posts p
-    LEFT JOIN spots s ON p.location_name = s.place_name
-    WHERE p.user_email = ? 
-    ORDER BY p.created_at DESC
-`;
-    try {
-        const [rows] = await db.execute(query, [userEmail]);
-        res.status(200).json(rows);
-    } catch (err) {
-        res.status(500).json({ message: '방문 기록을 불러오는 중 오류가 발생했습니다.' });
-    }
-});
 
-// [방문 인증 등록]
-router.post('/visit-history', async (req, res) => {
-    const { userEmail, spotId, visitDate } = req.body;
-    if (!userEmail || !spotId) return res.status(400).json({ message: '필수 항목 누락' });
+/* ── 🌟 [대대적 공사 완료] 방문 기록 구역 ── */
 
-    const query = `INSERT INTO visit_history (user_email, spot_id, visit_date, created_at) VALUES (?, ?, COALESCE(?, NOW()), NOW())`;
-    try {
-        await db.execute(query, [userEmail, spotId, visitDate || null]);
-        res.status(201).json({ message: '성지순례 방문 인증 성공! 🎒' });
-    } catch (err) {
-        res.status(500).json({ message: '오류 발생' });
-    }
-});
+// 🎯 [방문 기록 조회] 이제 라우터에서 직접 쿼리를 실행하지 않고, 완벽하게 검증된 컨트롤러 함수로 직접 토스합니다!
+router.get('/visit-history/:email', userController.getVisitHistory);
+
+// 🎯 [방문 인증 등록] 마찬가지로 일관성 유지를 위해 컨트롤러 함수로 매핑을 통일시킵니다.
+router.post('/visit-history', userController.createVisitHistory);
 
 module.exports = router;

@@ -110,6 +110,7 @@ exports.getUserFavorites = async (req, res) => {
     }
 
     try {
+        // 💡 VARCHAR(50)로 바뀐 spot_id 체계에 맞춰서 spots 테이블과 매칭되도록 설계되었습니다.
         const sql = `
             SELECT s.*, true AS isFavorite
             FROM favorites f
@@ -164,14 +165,13 @@ exports.deleteUserFavorite = async (req, res) => {
     }
 };
 
-/* ── 🌟 [서버 절대 안 죽는 완벽 방어 버전] 코스 관련 로직 ── */
+/* ── 코스 관련 로직 ── */
 
-// 10. 코스 목록 조회 (DB 컬럼 title 반영 완결본)
+// 10. 코스 목록 조회
 exports.getCourses = async (req, res) => {
     const idolId = req.query.idolId || 'leeyoungji';
     
     try {
-        // 💡 course_name 대신 실제 DB 컬럼명인 title로 직접 조회합니다.
         const sql = 'SELECT id, title, user_email AS userEmail, created_at FROM courses WHERE idol_id = ? ORDER BY created_at DESC';
         const [courses] = await db.execute(sql, [idolId]);
 
@@ -210,7 +210,6 @@ exports.createCourse = async (req, res) => {
     }
 
     try {
-        // 💡 INSERT 할 때도 테이블 컬럼명인 title 로 넣어줍니다.
         const courseSql = 'INSERT INTO courses (title, user_email, idol_id, created_at) VALUES (?, ?, ?, NOW())';
         const [courseResult] = await db.execute(courseSql, [title, userEmail, finalIdolId]);
         const newCourseId = courseResult.insertId;
@@ -248,6 +247,57 @@ exports.deleteCourse = async (req, res) => {
         res.status(200).json({ success: true, message: "코스가 삭제되었습니다." });
     } catch (err) {
         console.error("❌ 코스 삭제 에러:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+/* ── 🌟 [새로 추가됨] 방문 기록(Visit History) 관련 핵심 로직 ── */
+
+// 13. 사용자의 방문 기록 목록 조회 (GET /api/users/visit-history/:email)
+exports.getVisitHistory = async (req, res) => {
+    const { email } = req.params;
+
+    try {
+        // 💡 spot_id가 VARCHAR(50) 문자열이므로, spots.id 문자열과 일대일로 정확하게 JOIN 결합합니다.
+        const sql = `
+            SELECT 
+                v.id,
+                v.user_email,
+                v.spot_id,
+                DATE_FORMAT(v.visit_date, '%Y-%m-%d %H:%i:%s') AS date,
+                v.place_name,
+                s.member_name
+            FROM visit_history v
+            LEFT JOIN spots s ON v.spot_id = s.id
+            WHERE v.user_email = ?
+            ORDER BY v.visit_date DESC
+        `;
+        const [rows] = await db.execute(sql, [email]);
+        res.status(200).json(Array.isArray(rows) ? rows : []);
+    } catch (err) {
+        console.error("❌ 방문 기록 조회 중 DB 서버 에러:", err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// 14. 신규 방문 기록 등록 (POST /api/users/visit-history)
+exports.createVisitHistory = async (req, res) => {
+    const { email, spot_id, place_name, member_name, date } = req.body;
+
+    if (!email || !spot_id || !place_name) {
+        return res.status(400).json({ success: false, message: "필수 데이터(이메일, 장소 고유코드, 장소명)가 누락되었습니다." });
+    }
+
+    try {
+        // 💡 프론트엔드가 보낸 'bjm-1' 같은 문자열형 고유 키를 spot_id 컬럼에 그대로 적재합니다.
+        const sql = `
+            INSERT INTO visit_history (user_email, spot_id, place_name, visit_date, created_at) 
+            VALUES (?, ?, ?, ?, NOW())
+        `;
+        await db.execute(sql, [email, spot_id, place_name, date || new Date()]);
+        res.status(201).json({ success: true, message: "성지순례 방문 인증 기록이 성공적으로 보존되었습니다! 🎉" });
+    } catch (err) {
+        console.error("❌ 방문 기록 생성 중 DB 서버 에러:", err);
         res.status(500).json({ success: false, error: err.message });
     }
 };
