@@ -116,14 +116,22 @@ router.delete('/posts/:id', userController.deletePost);
 // ────────────────────────────────────────────────────────
 // 🌟 [연동 완료] 유저 계정별 즐겨찾기(Favorites) 조회 API 연동
 // ────────────────────────────────────────────────────────
-router.get('/favorites', userController.getUserFavorites); 
+// [게시글 수정 & 삭제]
+router.patch('/posts/:id', userController.updatePost);
+router.delete('/posts/:id', userController.deletePost);
+
+// ────────────────────────────────────────────────────────
+// 🌟 유저 계정별 즐겨찾기(Favorites) 연동 API 구역
+// ────────────────────────────────────────────────────────
+router.get('/favorites', userController.getUserFavorites);     // 👈 기존에 추가한 조회 API
+
+// 🔴 [이것들을 새로 추가하세요!] 토글(추가/삭제)에 대응하는 라우터 설정
+router.post('/favorites', userController.addUserFavorite);     // ✨ 추가 (POST)
+router.delete('/favorites', userController.deleteUserFavorite);  // ✨ 삭제 (DELETE)
+
 
 // [장소 관련 API]
-router.get('/places', (req, res) => {
-    const idolId = req.query.idolId || req.query.idId; 
-    const filteredPlaces = mockPlaces.filter(p => p.idolId === idolId);
-    res.json(filteredPlaces);
-});
+router.get('/places', (req, res) => { /* ... */ });
 
 // [방문 기록 조회] 특정 유저(이메일)의 성지순례 방문 리스트 가져오기
 router.get('/visit-history/:userEmail', async (req, res) => {

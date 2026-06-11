@@ -164,3 +164,55 @@ exports.getUserFavorites = async (req, res) => {
         res.status(500).json([]); // 에러 발생 시에도 프론트 붕괴를 막기 위해 빈 배열 반환
     }
 };
+
+// ────────────────────────────────────────────────────────
+// 🌟 [신규 추가] 유저 계정별 즐겨찾기 추가 및 삭제 컨트롤러 함수
+// ────────────────────────────────────────────────────────
+
+/**
+ * 1. 즐겨찾기 추가 (POST /api/users/favorites)
+ */
+exports.addUserFavorite = async (req, res) => {
+    const { userEmail, spotId } = req.body;
+
+    if (!userEmail || !spotId) {
+        return res.status(400).json({ success: false, message: '유저 이메일과 장소 ID는 필수입니다.' });
+    }
+
+    try {
+        // 중복 등록 방지를 위한 조건 처리 (선택) 후 INSERT
+        const sql = `INSERT INTO favorites (user_email, spot_id, created_at) VALUES (?, ?, NOW())`;
+        await db.execute(sql, [userEmail, spotId]);
+        
+        res.status(201).json({ success: true, message: '즐겨찾기에 추가되었습니다. ⭐' });
+    } catch (err) {
+        console.error('즐겨찾기 추가 중 DB 에러:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+/**
+ * 2. 즐겨찾기 삭제 (DELETE /api/users/favorites)
+ */
+exports.deleteUserFavorite = async (req, res) => {
+    // axios.delete의 data 속성으로 전달된 body 값 수급
+    const { userEmail, spotId } = req.body;
+
+    if (!userEmail || !spotId) {
+        return res.status(400).json({ success: false, message: '유저 이메일과 장소 ID는 필수입니다.' });
+    }
+
+    try {
+        const sql = `DELETE FROM favorites WHERE user_email = ? AND spot_id = ?`;
+        const [result] = await db.execute(sql, [userEmail, spotId]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: '삭제할 즐겨찾기 내역이 없습니다.' });
+        }
+
+        res.status(200).json({ success: true, message: '즐겨찾기에서 삭제되었습니다. 🤍' });
+    } catch (err) {
+        console.error('즐겨찾기 삭제 중 DB 에러:', err);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};
