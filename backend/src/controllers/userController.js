@@ -170,10 +170,17 @@ exports.deleteUserFavorite = async (req, res) => {
 // 10. 코스 목록 조회
 exports.getCourses = async (req, res) => {
     const idolId = req.query.idolId || 'leeyoungji';
-    
+    const userEmail = req.query.userEmail || null;
+
     try {
-        const sql = 'SELECT id, title, user_email AS userEmail, created_at FROM courses WHERE idol_id = ? ORDER BY created_at DESC';
-        const [courses] = await db.execute(sql, [idolId]);
+        let sql = 'SELECT id, title, user_email AS userEmail, created_at FROM courses WHERE idol_id = ?';
+        const params = [idolId];
+        if (userEmail) {
+            sql += ' AND user_email = ?';
+            params.push(userEmail);
+        }
+        sql += ' ORDER BY created_at DESC';
+        const [courses] = await db.execute(sql, params);
 
         for (let course of courses) {
             const spotSql = `
