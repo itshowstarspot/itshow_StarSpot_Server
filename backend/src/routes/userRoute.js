@@ -67,8 +67,8 @@ router.get('/posts', async (req, res) => {
     const userEmail = req.query.userEmail || req.query.email; 
 
     try {
-        const query = `
-            SELECT 
+        let query = `
+            SELECT
                 p.id, p.user_email, p.spot_id, p.title, p.content, p.photo_url,
                 DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i') AS date,
                 s.place_name, s.member_name

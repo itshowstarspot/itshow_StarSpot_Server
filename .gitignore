@@ -3,3 +3,7 @@ node_modules/
 *.log"node_modules/" 
 ".env" 
 "uploads/" 
+
+# SSH 키
+*.pem
+*.key

@@ -29,7 +29,7 @@ const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'star_spot',
+  database: process.env.DB_DATABASE || 'star_spot',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
@@ -696,8 +696,8 @@ app.get('/api/feeds', async (req, res) => {
 // 📝 리뷰/피드(Feeds) 추가 API 목록
 // ------------------------------------------
 app.get('/feeds', async (req, res) => {
-  const { placeId } = req.query;
-  console.log(`[리뷰 조회] 요청된 장소 ID (placeId): ${placeId}`);
+  const { placeId, userEmail } = req.query;
+  console.log(`[리뷰 조회] placeId: ${placeId}, userEmail: ${userEmail}`);
 
   try {
     let query = '';
@@ -705,7 +705,7 @@ app.get('/feeds', async (req, res) => {
 
     if (placeId && placeId !== 'undefined' && !isNaN(placeId)) {
       query = `
-        SELECT 
+        SELECT
           p.id, p.user_email, p.nickname, p.content, p.photo_path AS image, p.created_at,
           s.id AS placeId, s.place_name AS placeName
         FROM posts p
@@ -715,19 +715,26 @@ app.get('/feeds', async (req, res) => {
       `;
       params = [Number(placeId)];
     } else {
+      const conditions = [];
+      if (userEmail && userEmail !== 'undefined' && userEmail !== 'null') {
+        conditions.push('p.user_email = ?');
+        params.push(userEmail);
+      }
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       query = `
-        SELECT 
+        SELECT
           p.id, p.user_email, p.nickname, p.content, p.photo_path AS image, p.created_at,
           s.id AS placeId, s.place_name AS placeName
         FROM posts p
         LEFT JOIN spots s ON p.location_name = s.place_name
-        ORDER BY p.id DESC 
-        LIMIT 50
+        ${whereClause}
+        ORDER BY p.id DESC
+        LIMIT 100
       `;
     }
 
     const [rows] = await pool.query(query, params);
-    
+
     const formattedRows = rows.map(row => ({
       id: row.id,
       user_email: row.user_email,
@@ -788,29 +795,80 @@ app.post('/feeds', upload.any(), async (req, res) => {
     if (!finalLocationName) finalLocationName = '알 수 없는 장소';
 
     const [result] = await pool.query(
-      `INSERT INTO posts 
-        (user_email, nickname, content, location_name, latitude, longitude, photo_path) 
+      `INSERT INTO posts
+        (user_email, nickname, content, location_name, latitude, longitude, photo_path)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
-        userEmail || null, 
-        nickname || '익명', 
-        content || '', 
-        finalLocationName, 
-        finalLatitude, 
-        finalLongitude, 
+        userEmail || null,
+        nickname || '익명',
+        content || '',
+        finalLocationName,
+        finalLatitude,
+        finalLongitude,
         imageUrl
       ]
     );
 
-    return res.status(200).json({ 
-      success: true, 
-      message: "리뷰 등록 성공!", 
+    // 피드 등록과 동시에 방문 기록 저장
+    const numericPlaceId = Number(placeId);
+    if (numericPlaceId && !isNaN(numericPlaceId) && userEmail && userEmail !== 'null') {
+      try {
+        const [userExists] = await pool.query('SELECT id FROM users WHERE email = ?', [userEmail]);
+        if (userExists.length > 0) {
+          await pool.query(
+            'INSERT INTO visit_history (user_email, spot_id, visit_date, created_at) VALUES (?, ?, CURDATE(), NOW())',
+            [userEmail, numericPlaceId]
+          );
+          console.log(`[방문 기록 자동 저장] 유저: ${userEmail}, 장소 ID: ${numericPlaceId}`);
+        }
+      } catch (visitErr) {
+        console.log('⚠️ 방문 기록 저장 실패 (피드는 정상 등록):', visitErr.message);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "리뷰 등록 성공!",
       id: result.insertId,
       image: imageUrl
     });
   } catch (error) {
     console.error("❌ [POST /feeds] 치명적 서버 에러:", error);
     return res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
+
+// 피드 수정
+app.put('/feeds/:id', async (req, res) => {
+  const { id } = req.params;
+  const { content, userEmail } = req.body;
+  try {
+    const [result] = await pool.query(
+      'UPDATE posts SET content = ? WHERE id = ?',
+      [content, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: '수정할 피드를 찾을 수 없습니다.' });
+    }
+    return res.status(200).json({ success: true, message: '피드가 수정되었습니다.' });
+  } catch (error) {
+    console.error('❌ [PUT /feeds] DB 에러:', error);
+    return res.status(500).json({ success: false, message: '서버 에러' });
+  }
+});
+
+// 피드 삭제
+app.delete('/feeds/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [result] = await pool.query('DELETE FROM posts WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: '삭제할 피드를 찾을 수 없습니다.' });
+    }
+    return res.status(200).json({ success: true, message: '피드가 삭제되었습니다.' });
+  } catch (error) {
+    console.error('❌ [DELETE /feeds] DB 에러:', error);
+    return res.status(500).json({ success: false, message: '서버 에러' });
   }
 });
 

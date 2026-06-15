@@ -177,11 +177,11 @@ exports.getCourses = async (req, res) => {
 
         for (let course of courses) {
             const spotSql = `
-                SELECT s.id, s.place_name AS placeName, s.address 
+                SELECT s.id, s.place_name AS placeName, s.address, s.latitude, s.longitude
                 FROM course_spots cs
                 JOIN spots s ON cs.spot_id = s.id
                 WHERE cs.course_id = ?
-                ORDER BY cs.sequence ASC
+                ORDER BY cs.sequence_order ASC
             `;
             const [spots] = await db.execute(spotSql, [course.id]);
             course.places = spots; 
@@ -214,7 +214,7 @@ exports.createCourse = async (req, res) => {
         const [courseResult] = await db.execute(courseSql, [title, userEmail, finalIdolId]);
         const newCourseId = courseResult.insertId;
 
-        const mappingSql = 'INSERT INTO course_spots (course_id, spot_id, sequence) VALUES (?, ?, ?)';
+        const mappingSql = 'INSERT INTO course_spots (course_id, spot_id, sequence_order) VALUES (?, ?, ?)';
         for (let i = 0; i < finalSpotIds.length; i++) {
             await db.execute(mappingSql, [newCourseId, finalSpotIds[i], i + 1]);
         }
@@ -243,7 +243,7 @@ exports.deleteCourse = async (req, res) => {
             return res.status(403).json({ success: false, message: "삭제 권한이 없거나 없는 코스입니다." });
         }
 
-        await db.execute('DELETE FROM course_spots WHERE course_id = ?', [id]);
+        // course_spots는 courses FK ON DELETE CASCADE로 자동 삭제됨
         res.status(200).json({ success: true, message: "코스가 삭제되었습니다." });
     } catch (err) {
         console.error("❌ 코스 삭제 에러:", err);
@@ -264,7 +264,7 @@ exports.getVisitHistory = async (req, res) => {
         v.id,
         v.user_email,
         v.spot_id,
-        DATE_FORMAT(v.visit_date, '%Y-%m-%d %H:%i:%s') AS date,
+        DATE_FORMAT(v.visit_date, '%Y-%m-%d') AS date,
         s.place_name, -- 💡 v.place_name 에서 s.place_name 으로 변경!
         s.member_name
     FROM visit_history v
@@ -282,20 +282,20 @@ exports.getVisitHistory = async (req, res) => {
 
 // 14. 신규 방문 기록 등록 (POST /api/users/visit-history)
 exports.createVisitHistory = async (req, res) => {
-    const { email, spot_id, place_name, member_name, date } = req.body;
+    const { email, spot_id, place_id, date } = req.body;
+    const finalSpotId = Number(spot_id || place_id);
 
-    if (!email || !spot_id || !place_name) {
-        return res.status(400).json({ success: false, message: "필수 데이터(이메일, 장소 고유코드, 장소명)가 누락되었습니다." });
+    if (!email || !finalSpotId) {
+        return res.status(400).json({ success: false, message: "이메일과 장소 ID는 필수입니다." });
     }
 
     try {
-        // 💡 프론트엔드가 보낸 'bjm-1' 같은 문자열형 고유 키를 spot_id 컬럼에 그대로 적재합니다.
         const sql = `
-            INSERT INTO visit_history (user_email, spot_id, place_name, visit_date, created_at) 
-            VALUES (?, ?, ?, ?, NOW())
+            INSERT INTO visit_history (user_email, spot_id, visit_date, created_at)
+            VALUES (?, ?, ?, NOW())
         `;
-        await db.execute(sql, [email, spot_id, place_name, date || new Date()]);
-        res.status(201).json({ success: true, message: "성지순례 방문 인증 기록이 성공적으로 보존되었습니다! 🎉" });
+        await db.execute(sql, [email, finalSpotId, date || new Date()]);
+        res.status(201).json({ success: true, message: "방문 기록이 저장되었습니다." });
     } catch (err) {
         console.error("❌ 방문 기록 생성 중 DB 서버 에러:", err);
         res.status(500).json({ success: false, error: err.message });
