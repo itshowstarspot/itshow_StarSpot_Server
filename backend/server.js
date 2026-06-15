@@ -246,19 +246,28 @@ app.get('/api/courses', async (req, res) => {
 
   // ── 🏠 [일반 내 코스 분기] DB에서 실시간 저장 데이터 조회 ──
   try {
-    const query = `
-      SELECT 
-        id, 
-        title, 
+    const userEmail = req.query.userEmail || null;
+
+    let query = `
+      SELECT
+        id,
+        title,
         idol_id AS idolId,
-        user_email AS userEmail, 
+        user_email AS userEmail,
         created_at AS createdAt
       FROM courses
-      WHERE idol_id = ? OR idol_id IS NULL OR ? = 'all'
-      ORDER BY created_at DESC
+      WHERE (idol_id = ? OR idol_id IS NULL OR ? = 'all')
     `;
-    
-    const [courses] = await pool.query(query, [idolId, idolId]);
+    const params = [idolId, idolId];
+
+    if (userEmail) {
+      query += ` AND user_email = ?`;
+      params.push(userEmail);
+    }
+
+    query += ` ORDER BY created_at DESC`;
+
+    const [courses] = await pool.query(query, params);
 
     for (let course of courses) {
       const spotQuery = `
@@ -294,8 +303,8 @@ app.get('/api/courses', async (req, res) => {
 app.post('/api/courses', async (req, res) => {
   const connection = await pool.getConnection();
   try {
-    const { title, course_name, spotIds, places, selectedPlaces, idolId } = req.body; 
-    const userEmail = getEmailFromToken(req); 
+    const { title, course_name, spotIds, places, selectedPlaces, idolId, userEmail: bodyEmail } = req.body;
+    const userEmail = bodyEmail || getEmailFromToken(req);
 
     console.log(`[코스 생성 시도] 유저: ${userEmail}, 전달데이터:`, req.body);
 
