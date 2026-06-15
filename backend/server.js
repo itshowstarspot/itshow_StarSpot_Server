@@ -6,29 +6,52 @@ const axios = require('axios');
 const mysql = require('mysql2/promise');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
 
 // 라우터 불러오기
 const userRoute = require('./src/routes/userRoute');
 
 const app = express();
 
-// 1. 미들웨어 설정
+// ==========================================
+// 1. 미들웨어 및 static 설정
+// ==========================================
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// ==========================================
+// 2. MySQL Connection Pool 설정
+// ==========================================
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'star_spot',
+  database: process.env.DB_DATABASE || 'star_spot',
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
 });
 
+// 데이터베이스 연결 확인 로그 추가
+(async () => {
+  try {
+    const connection = await pool.getConnection();
+    console.log("✅ [시스템] MySQL 데이터베이스 연결 성공! (창고 문 열림)");
+    connection.release();
+  } catch (err) {
+    console.error("❌ [시스템] MySQL 데이터베이스 연결 실패:", err.message);
+  }
+})();
+
+// 글로벌 pool 바인딩 (외부 라우터인 userRoute 등에서 쓸 수 있도록 최적화)
+app.set('pool', pool);
+
+// ==========================================
+// 3. 파일 업로드 설정 (Multer)
+// ==========================================
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, 'uploads/'); 
@@ -39,10 +62,432 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// 2. API 경로 설정
+
+// ==========================================
+// 4. API 경로 및 라우터 설정
+// ==========================================
+
+// 기본 루트 확인용
+app.get('/', (req, res) => {
+    res.send('Star_Spot 백엔드 서버가 가동 중입니다.');
+});
+
+// ------------------------------------------
+// 🔒 [인증 안전장치 미들웨어성 함수]
+// ------------------------------------------
+const getEmailFromToken = (req) => {
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader) {
+    console.log("⚠️ [인증 경고] 요청 헤더에 Authorization 토큰이 없습니다. 가상 계정으로 진행합니다.");
+    return "test_user@naver.com"; 
+  }
+
+  const token = authHeader.split(' ')[1];
+  
+  if (!token || token === 'null' || token === 'undefined') {
+    console.log("⚠️ [인증 경고] 유효하지 않은 토큰 값이 넘어왔습니다. 가상 계정으로 진행합니다.");
+    return "test_user@naver.com";
+  }
+
+  if (!token.includes('@')) {
+    console.log(`💡 [인증 안내] JWT 토큰 형식이 감지되었습니다: ${token.substring(0, 10)}... 가상 계정으로 전환합니다.`);
+    return "test_jwt_user@naver.com";
+  }
+  
+  return token; 
+};
+
+// ------------------------------------------
+// ❤️ 즐겨찾기(Favorites) API 목록
+// ------------------------------------------
+
+// 1. [GET] 로그인한 유저의 즐겨찾기 목록 조회
+app.get('/api/favorites', async (req, res) => {
+  const userEmail = getEmailFromToken(req);
+  console.log(`[즐겨찾기 조회] 요청 유저: ${userEmail}`);
+
+  try {
+    const query = 'SELECT spot_id FROM favorites WHERE user_email = ?';
+    const [rows] = await pool.query(query, [userEmail]);
+    
+    const favoriteIds = rows.map(row => String(row.spot_id));
+    console.log(`[조회 성공] 유저(${userEmail}) 즐겨찾기 개수: ${favoriteIds.length}개`);
+    return res.status(200).json(favoriteIds);
+  } catch (error) {
+    console.error("❌ [GET /api/favorites] DB 에러 발생:", error);
+    return res.status(500).json([]);
+  }
+});
+
+// 2. [POST] 즐겨찾기 장소 추가
+app.post('/api/favorites', async (req, res) => {
+  const userEmail = getEmailFromToken(req);
+  const { placeId } = req.body; 
+
+  console.log(`[즐겨찾기 추가] 요청 유저: ${userEmail}, 장소 ID: ${placeId}`);
+
+  if (!placeId) {
+    return res.status(400).json({ success: false, message: "장소 식별자가 누락되었습니다." });
+  }
+
+  const numericSpotId = Number(placeId);
+  if (isNaN(numericSpotId)) {
+    console.log(`⚠️ [즐겨찾기 패스] '${placeId}'는 정적 더미 데이터 ID이므로 DB 저장을 생략하고 성공 처리합니다.`);
+    return res.status(200).json({ success: true, message: "더미 데이터는 로컬 스토리지에만 저장됩니다." });
+  }
+
+  try {
+    // 외래키 방어용 유저 체크 및 자동 삽입
+    const [userExists] = await pool.query('SELECT id FROM users WHERE email = ?', [userEmail]);
+    if (userExists.length === 0) {
+      console.log(`💡 [외래키 방어] 유저(${userEmail})가 users 테이블에 없어 임시로 자동 생성합니다.`);
+      await pool.query(
+        "INSERT INTO users (email, password, nickname, favorite_idol) VALUES (?, '1234', '테스트유저', '정국')", 
+        [userEmail]
+      );
+    }
+
+    const checkQuery = 'SELECT id FROM favorites WHERE user_email = ? AND spot_id = ?';
+    const [existing] = await pool.query(checkQuery, [userEmail, numericSpotId]);
+
+    if (existing.length > 0) {
+      return res.status(200).json({ success: true, message: "이미 등록된 즐겨찾기입니다." });
+    }
+
+    const insertQuery = 'INSERT INTO favorites (user_email, spot_id) VALUES (?, ?)';
+    await pool.query(insertQuery, [userEmail, numericSpotId]);
+
+    return res.status(200).json({ success: true, message: "성공적으로 즐겨찾기에 등록되었습니다!" });
+  } catch (error) {
+    console.error("❌ [POST /api/favorites] DB 에러 발생:", error);
+    return res.status(500).json({ success: false, message: "즐겨찾기 등록 처리 중 서버 에러 발생" });
+  }
+});
+
+// 3. [DELETE] 즐겨찾기 장소 해제/삭제
+app.delete('/api/favorites/:placeId', async (req, res) => {
+  const userEmail = getEmailFromToken(req);
+  const { placeId } = req.params;
+
+  console.log(`[즐겨찾기 삭제] 요청 유저: ${userEmail}, 장소 ID: ${placeId}`);
+
+  const numericSpotId = Number(placeId);
+  if (isNaN(numericSpotId)) {
+    console.log(`⚠️ [즐겨찾기 삭제 패스] '${placeId}'는 로컬 전용 ID이므로 서버에서는 생략합니다.`);
+    return res.status(200).json({ success: true, message: "로컬 데이터 해제 완료." });
+  }
+
+  try {
+    const deleteQuery = 'DELETE FROM favorites WHERE user_email = ? AND spot_id = ?';
+    const [result] = await pool.query(deleteQuery, [userEmail, numericSpotId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "삭제할 즐겨찾기 이력이 존재하지 않습니다." });
+    }
+
+    return res.status(200).json({ success: true, message: "즐겨찾기가 해제되었습니다." });
+  } catch (error) {
+    console.error("❌ [DELETE /api/favorites] DB 에러 발생:", error);
+    return res.status(500).json({ success: false, message: "즐겨찾기 삭제 처리 중 서버 에러 발생" });
+  }
+});
+
+// ------------------------------------------
+// 🛣️ 나만의 코스(Courses) API 목록 (프론트엔드 완벽 호환 UI 복구 버전)
+// ------------------------------------------
+
+// 1. 코스 목록 전체 조회 API (일반 내 코스 및 추천 코스 완벽 분기 처리)
+app.get('/api/courses', async (req, res) => {
+  const idolId = req.query.idolId || 'leeyoungji';
+  const isRecommended = req.query.recommended === 'true'; // 👈 프론트의 recommended 파라미터 감지
+  
+  console.log(`[코스 목록 조회] 요청된 아이돌 ID: ${idolId}, 추천코스여부: ${isRecommended}`);
+
+  // ── 🌟 [추천 코스 분기] 프론트엔드가 기대하는 고정 추천 데이터 반환 ──
+  if (isRecommended) {
+    const RECOMMENDED_COURSES = [
+      {
+        id: 'rec-jk-1',
+        title: '정국 강남 맛집 투어',
+        idolId: 'jungkook',
+        isRecommended: true,
+        description: '정국이 멤버들과 자주 찾던 강남 식당들을 따라가보세요',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        spotsCount: 3,
+        places: [
+          { id: 2, name: '우돈청', address: '서울특별시 강남구 언주로 170길 37', category: '음식점', lat: 37.52661, lng: 127.0367, description: '정국이 구칠즈 멤버들과 함께 식사한 곳' },
+          { id: 3, name: '꽃새우 영번지 역삼점', address: '서울특별시 강남구 언주로 536', category: '음식점', lat: 37.50619, lng: 127.0413, description: '정국이 왔다간 해산물요리 전문점' },
+          { id: 1, name: '개미마을', address: '서울특별시 강남구', category: '음식점', lat: 37.506, lng: 127.042, description: '방문 스팟' }
+        ],
+      },
+      {
+        id: 'rec-jk-2',
+        title: '정국 이태원 코스',
+        idolId: 'jungkook',
+        isRecommended: true,
+        description: '이태원에서 정국의 발자취를 따라가보세요',
+        createdAt: '2026-01-02T00:00:00.000Z',
+        spotsCount: 2,
+        places: [
+          { id: 2, name: '우돈청', address: '서울특별시 강남구 언주로 170길 37', category: '음식점', lat: 37.52661, lng: 127.0367, description: '정국이 구칠즈 멤버들과 함께 식사한 곳' },
+          { id: 3, name: '꽃새우 영번지 역삼점', address: '서울특별시 강남구 언주로 536', category: '음식점', lat: 37.50619, lng: 127.0413, description: '정국이 왔다간 해산물요리 전문점' }
+        ],
+      },
+    ];
+
+    // 현재 선택된 아이돌 ID에 맞게 필터링해서 던져줍니다.
+    const filteredRecommended = idolId && idolId !== 'all'
+      ? RECOMMENDED_COURSES.filter((c) => c.idolId === idolId)
+      : RECOMMENDED_COURSES;
+
+    return res.status(200).json(filteredRecommended);
+  }
+
+  // ── 🏠 [일반 내 코스 분기] DB에서 실시간 저장 데이터 조회 ──
+  try {
+    const query = `
+      SELECT 
+        id, 
+        title, 
+        idol_id AS idolId,
+        user_email AS userEmail, 
+        created_at AS createdAt
+      FROM courses
+      WHERE idol_id = ? OR idol_id IS NULL OR ? = 'all'
+      ORDER BY created_at DESC
+    `;
+    
+    const [courses] = await pool.query(query, [idolId, idolId]);
+
+    for (let course of courses) {
+      const spotQuery = `
+        SELECT 
+          s.id, 
+          s.place_name AS name, 
+          s.address, 
+          s.category, 
+          s.latitude AS lat, 
+          s.longitude AS lng,
+          s.description,
+          s.image_url AS imageUrl
+        FROM course_spots cs
+        JOIN spots s ON cs.spot_id = s.id
+        WHERE cs.course_id = ?
+        ORDER BY cs.sequence_order ASC
+      `;
+      const [spots] = await pool.query(spotQuery, [course.id]);
+      
+      course.places = spots; 
+      course.spotsCount = spots.length; 
+    }
+
+    return res.status(200).json(courses);
+
+  } catch (error) {
+    console.error('❌ 코스 목록 DB 조회 중 에러 발생:', error);
+    return res.status(200).json([]); 
+  }
+});
+
+// 2. 코스 등록 API (title 및 idol_id 완벽 연동)
+app.post('/api/courses', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const { title, course_name, spotIds, places, selectedPlaces, idolId } = req.body; 
+    const userEmail = getEmailFromToken(req); 
+
+    console.log(`[코스 생성 시도] 유저: ${userEmail}, 전달데이터:`, req.body);
+
+    const finalTitle = title || course_name;
+    const finalIdolId = idolId || 'leeyoungji'; // 아이돌 유실 방지 방어선
+
+    if (!finalTitle) {
+      return res.status(400).json({ success: false, message: '코스 제목을 입력해주세요.' });
+    }
+
+    await connection.beginTransaction();
+
+    // 외래키 방어용 유저 체크
+    const [userExists] = await connection.query('SELECT id FROM users WHERE email = ?', [userEmail]);
+    if (userExists.length === 0) {
+      console.log(`💡 [외래키 방어] 코스 등록 중 유저(${userEmail}) 정보가 DB에 없어 임시 계정을 자동 생성합니다.`);
+      await connection.query(
+        "INSERT INTO users (email, password, nickname) VALUES (?, '1234', '임시유저')", 
+        [userEmail]
+      );
+    }
+
+    // 💡 변경된 테이블 규격(title, idol_id)에 맞춰 데이터 매핑 및 저장
+    const insertCourseQuery = 'INSERT INTO courses (user_email, title, idol_id, created_at) VALUES (?, ?, ?, NOW())';
+    const [courseResult] = await connection.query(insertCourseQuery, [userEmail, finalTitle, finalIdolId]);
+    const newCourseId = courseResult.insertId;
+
+    console.log(`[DB 코스 삽입 성공] ID: ${newCourseId}, 제목: ${finalTitle}, 아이돌: ${finalIdolId}`);
+
+    // 장소 ID 유실 없는 통합 파싱 처리
+    let finalSpotIds = [];
+    if (spotIds && Array.isArray(spotIds)) {
+      finalSpotIds = spotIds;
+    } else if (selectedPlaces && Array.isArray(selectedPlaces)) {
+      finalSpotIds = selectedPlaces.map(p => p.id || p.spot_id);
+    } else if (places && Array.isArray(places)) {
+      finalSpotIds = places.map(p => {
+        const rawId = typeof p === 'object' ? String(p.id || p.spot_id) : String(p);
+        const onlyNumbers = rawId.replace(/[^0-9]/g, ''); 
+        return onlyNumbers ? Number(onlyNumbers) : null;
+      }).filter(id => id !== null);
+    }
+
+    console.log(`[스팟 ID 파싱 결과]`, finalSpotIds);
+
+    if (finalSpotIds.length > 0) {
+      const insertSpotsQuery = 'INSERT INTO course_spots (course_id, spot_id, sequence_order) VALUES (?, ?, ?)';
+      
+      for (let i = 0; i < finalSpotIds.length; i++) {
+        const spotId = finalSpotIds[i];
+        const sequenceOrder = i + 1; 
+
+        if (!isNaN(spotId) && spotId > 0) {
+          try {
+            await connection.query(insertSpotsQuery, [newCourseId, spotId, sequenceOrder]);
+            console.log(`   └─ [스팟 매핑 성공] 코스 ID: ${newCourseId} -> 장소 ID: ${spotId} (순서: ${sequenceOrder})`);
+          } catch (spotErr) {
+            console.log(`⚠️ 장소 ID ${spotId}번 연결 실패:`, spotErr.message);
+          }
+        }
+      }
+    }
+
+    await connection.commit();
+    return res.status(201).json({ 
+      success: true, 
+      message: '코스가 성공적으로 등록되었습니다.',
+      courseId: newCourseId 
+    });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('❌ 코스 등록 중 치명적 DB 에러 발생 (롤백 완료):', error);
+    return res.status(500).json({ success: false, message: '서버 내부 에러가 발생했습니다.', error: error.message });
+  } finally {
+    connection.release();
+  }
+});
+
+// 3. 코스 삭제 API
+app.delete('/api/courses/:id', async (req, res) => {
+  const { id } = req.params;
+  console.log(`[코스 삭제 시도] 삭제할 코스 ID: ${id}`);
+
+  if (!id || id === 'undefined') {
+    return res.status(400).json({ success: false, message: '유효한 코스 ID가 아닙니다.' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    await connection.query('DELETE FROM course_spots WHERE course_id = ?', [id]);
+    const [result] = await connection.query('DELETE FROM courses WHERE id = ?', [id]);
+
+    if (result.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: '삭제하려는 코스가 DB에 존재하지 않습니다.' });
+    }
+
+    await connection.commit();
+    console.log(`[코스 삭제 성공] 코스 ID: ${id} 및 관련 스팟 매핑 삭제 완료`);
+    return res.status(200).json({ success: true, message: '코스가 정상적으로 삭제되었습니다.' });
+
+  } catch (error) {
+    await connection.rollback();
+    console.error('❌ 코스 삭제 중 DB 에러 발생:', error);
+    return res.status(500).json({ success: false, message: '서버 내부 에러로 코스를 삭제하지 못했습니다.' });
+  } finally {
+    connection.release();
+  }
+});
+
+
+
+// ------------------------------------------
+// 👥 유저 관련 라우터 연결
+// ------------------------------------------
 app.use('/api/users', userRoute);
 
-// 인생네컷 업로드 및 DB 주소 저장 API
+// 프로필 라우터
+app.put('/api/users/profile', async (req, res) => {
+  try {
+    const { userId, email, favorite_idol, nickname } = req.body;
+
+    if (!userId && !email) {
+      return res.status(400).json({ success: false, message: "유저 식별 정보(id 또는 email)가 없습니다." });
+    }
+
+    let query = '';
+    let queryParams = [];
+
+    if (userId) {
+      query = 'UPDATE users SET favorite_idol = COALESCE(?, favorite_idol), nickname = COALESCE(?, nickname) WHERE id = ?';
+      queryParams = [favorite_idol || null, nickname || null, userId];
+    } else {
+      query = 'UPDATE users SET favorite_idol = COALESCE(?, favorite_idol), nickname = COALESCE(?, nickname) WHERE email = ?';
+      queryParams = [favorite_idol || null, nickname || null, email];
+    }
+
+    const [result] = await pool.query(query, queryParams);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "해당 유저를 찾을 수 없습니다." });
+    }
+
+    res.status(200).json({ 
+      success: true, 
+      message: "DB 프로필(닉네임/최애) 업데이트 성공! ⭐",
+      favoriteIdol: favorite_idol,
+      nickname: nickname
+    });
+
+  } catch (error) {
+    console.error("프로필 DB 업데이트 에러:", error);
+    res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
+
+// 회원 탈퇴 API
+app.delete('/api/users/:idOrEmail', async (req, res) => {
+  try {
+    const { idOrEmail } = req.params;
+
+    if (!idOrEmail) {
+      return res.status(400).json({ success: false, message: "유저 식별 정보가 없습니다." });
+    }
+
+    let query = '';
+    if (/^\d+$/.test(idOrEmail)) {
+      query = 'DELETE FROM users WHERE id = ?';
+    } else {
+      query = 'DELETE FROM users WHERE email = ?';
+    }
+
+    const [result] = await pool.query(query, [idOrEmail]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: "삭제할 유저를 찾을 수 없습니다." });
+    }
+
+    res.status(200).json({ success: true, message: "회원 탈퇴가 정상적으로 처리되었습니다." });
+  } catch (error) {
+    console.error("회원 탈퇴 DB 에러:", error);
+    res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
+
+
+// ------------------------------------------
+// 📸 사진 업로드 및 성지순례 기능 목록
+// ------------------------------------------
 app.post('/api/life4cut/upload', upload.single('photo'), async (req, res) => {
   try {
     if (!req.file) {
@@ -124,28 +569,22 @@ app.post('/api/transit/routes', async (req, res) => {
     }
 });
 
-
-// =================================================================
-// [백엔드 server.js 최종수정] idolId 및 카테고리(영어/한글/대소문자 완벽 대응) 통합 API
-// =================================================================
+// ------------------------------------------
+// 🗺️ 장소 및 스팟(Spots) 관련 API 목록
+// ------------------------------------------
 app.get('/api/places', async (req, res) => {
   try {
-    const { idolId, category } = req.query; // 프론트가 보낸 idolId와 category 추출
-    
+    const { idolId, category } = req.query; 
     let query = 'SELECT * FROM spots WHERE 1=1'; 
     let params = [];
 
-    // 1. idolId 필터링 (기존 로직 유지)
     if (idolId) {
-      query += ' AND (member_name LIKE ? OR group_name LIKE ?)';
-      params.push(`%${idolId}%`, `%${idolId}%`);
+      query += ' AND (member_name LIKE ? OR group_name LIKE ? OR place_name LIKE ?)';
+      params.push(`%${idolId}%`, `%${idolId}%`, `%${idolId}%`);
     }
 
-    // 2. [★업그레이드★] category 필터링 조건 (한글/영어 대소문자 공백 완전 파괴)
     if (category && category.trim() !== '' && category !== 'all') {
-      // 프론트가 'restaurant', 'cafe', 'playground' 등을 보낼 때 유연하게 매치하기 위해 LIKE 사용
       query += ' AND (category LIKE ? OR category LIKE ?)';
-      
       const cleanCategory = category.trim().toLowerCase();
       params.push(`%${cleanCategory}%`, `%${category}%`);
     }
@@ -174,9 +613,6 @@ app.get('/api/places', async (req, res) => {
   }
 });
 
-// =======================================================
-// [백엔드 server.js 추가] 기존 프론트엔드가 호출하는 전체 목록 API 복구
-// =======================================================
 app.get('/api/spots', async (req, res) => {
   try {
     const [rows] = await pool.query('SELECT * FROM spots');
@@ -203,7 +639,6 @@ app.get('/api/spots', async (req, res) => {
   }
 });
 
-// 2. 단일 장소 상세 조회 API 
 app.get('/api/places/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -236,7 +671,6 @@ app.get('/api/places/:id', async (req, res) => {
   }
 });
 
-// 3. [추가] 장소별 후기 피드 조회 API (feedService.js 연동용)
 app.get('/api/feeds', async (req, res) => {
   try {
     const { placeId } = req.query;
@@ -244,13 +678,11 @@ app.get('/api/feeds', async (req, res) => {
     let params = [];
 
     if (placeId) {
-      // 업로드 테이블(posts)에 기록된 성지 고유 ID나 장소 기반 매칭이 있다면 필터링합니다.
-      // 현재 posts 테이블의 구조에 맞춰 필요시 쿼리를 커스텀하세요.
-      query += ' WHERE id = ?'; // 임시 매칭용 구조
+      query += ' WHERE id = ?'; 
       params.push(placeId);
     }
     
-    query += ' ORDER BY id DESC'; // 최신순 정렬
+    query += ' ORDER BY id DESC'; 
 
     const [rows] = await pool.query(query, params);
     res.status(200).json(rows);
@@ -260,53 +692,190 @@ app.get('/api/feeds', async (req, res) => {
   }
 });
 
-// ==========================================
-// [백엔드 server.js 추가] 나만의 코스 관련 API 라우터
-// ==========================================
+// ------------------------------------------
+// 📝 리뷰/피드(Feeds) 추가 API 목록
+// ------------------------------------------
+app.get('/feeds', async (req, res) => {
+  const { placeId, userEmail } = req.query;
+  console.log(`[리뷰 조회] placeId: ${placeId}, userEmail: ${userEmail}`);
 
-// 1. 코스 목록 조회 API
-app.get('/api/courses', async (req, res) => {
   try {
-    // 임시로 보낼 빈 배열 혹은 DB에 코스 테이블(courses)이 있다면 조회를 진행합니다.
-    // 여기서는 404 에러와 프론트엔드 오류를 막기 위해 정상적인 빈 배열(또는 기본값)을 반환합니다.
-    const mockCourses = [
-      {
-        id: 'course_1',
-        title: '카리나 성수동 힐링 코스',
-        description: '성수동 카페부터 맛집까지 한 번에 도는 코스!',
-        spotsCount: 3,
-        createdAt: new Date().toISOString()
+    let query = '';
+    let params = [];
+
+    if (placeId && placeId !== 'undefined' && !isNaN(placeId)) {
+      query = `
+        SELECT
+          p.id, p.user_email, p.nickname, p.content, p.photo_path AS image, p.created_at,
+          s.id AS placeId, s.place_name AS placeName
+        FROM posts p
+        JOIN spots s ON p.location_name = s.place_name
+        WHERE s.id = ?
+        ORDER BY p.id DESC
+      `;
+      params = [Number(placeId)];
+    } else {
+      const conditions = [];
+      if (userEmail && userEmail !== 'undefined' && userEmail !== 'null') {
+        conditions.push('p.user_email = ?');
+        params.push(userEmail);
       }
-    ];
+      const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+      query = `
+        SELECT
+          p.id, p.user_email, p.nickname, p.content, p.photo_path AS image, p.created_at,
+          s.id AS placeId, s.place_name AS placeName
+        FROM posts p
+        LEFT JOIN spots s ON p.location_name = s.place_name
+        ${whereClause}
+        ORDER BY p.id DESC
+        LIMIT 100
+      `;
+    }
 
-    // 만약 DB에 별도의 courses 테이블을 만드셨다면 아래 주석을 해제하고 연동하세요.
-    // const [rows] = await pool.query('SELECT * FROM courses ORDER BY id DESC');
-    // return res.status(200).json(rows);
+    const [rows] = await pool.query(query, params);
 
-    res.status(200).json(mockCourses);
+    const formattedRows = rows.map(row => ({
+      id: row.id,
+      user_email: row.user_email,
+      nickname: row.nickname,
+      content: row.content,
+      image: row.image,
+      created_at: row.created_at,
+      placeId: row.placeId || '',
+      place_name: row.placeName || row.location_name || '성지순례 장소',
+      placeName: row.placeName || row.location_name || '성지순례 장소'
+    }));
+
+    return res.status(200).json(formattedRows);
   } catch (error) {
-    console.error('코스 목록 조회 중 에러 발생:', error);
-    res.status(500).json({ message: '서버 에러가 발생했습니다.' });
+    console.error("❌ [GET /feeds] DB 에러 발생:", error);
+    return res.status(500).json([]);
   }
 });
 
-// 2. 코스 등록 API (미리 만들어두기)
-app.post('/api/courses', async (req, res) => {
+app.post('/feeds', upload.any(), async (req, res) => {
   try {
-    const { title, description, spotIds } = req.body;
-    res.status(201).json({ success: true, message: '코스가 성공적으로 등록되었습니다.' });
+    const { userEmail, nickname, content, placeId, placeName, locationName, latitude, longitude, image } = req.body;
+    let imageUrl = null;
+
+    if (image && image.startsWith('data:image')) {
+      const base64Data = image.replace(/^data:image\/\w+;base64,/, "");
+      const filename = `photo_${Date.now()}.png`;
+      const uploadPath = path.join(__dirname, 'uploads', filename);
+
+      if (!fs.existsSync(path.join(__dirname, 'uploads'))) {
+        fs.mkdirSync(path.join(__dirname, 'uploads'), { recursive: true });
+      }
+
+      fs.writeFileSync(uploadPath, base64Data, 'base64');
+      imageUrl = `${req.protocol}://${req.get('host')}/uploads/${filename}`;
+    } else if (req.files && req.files.length > 0) {
+      imageUrl = `${req.protocol}://${req.get('host')}/uploads/${req.files[0].filename}`;
+    } else if (image) {
+      imageUrl = image;
+    }
+
+    let finalLocationName = placeName || locationName;
+    let finalLatitude = latitude ? Number(latitude) : null;
+    let finalLongitude = longitude ? Number(longitude) : null;
+
+    if ((!finalLocationName || finalLocationName === '알 수 없는 장소') && placeId && placeId !== 'undefined' && !isNaN(placeId)) {
+      const [spotRows] = await pool.query(
+        "SELECT place_name, latitude, longitude FROM spots WHERE id = ?", 
+        [Number(placeId)]
+      );
+      if (spotRows && spotRows.length > 0) {
+        finalLocationName = spotRows[0].place_name;
+        finalLatitude = spotRows[0].latitude ? Number(spotRows[0].latitude) : finalLatitude;
+        finalLongitude = spotRows[0].longitude ? Number(spotRows[0].longitude) : finalLongitude;
+      }
+    }
+
+    if (!finalLocationName) finalLocationName = '알 수 없는 장소';
+
+    const [result] = await pool.query(
+      `INSERT INTO posts
+        (user_email, nickname, content, location_name, latitude, longitude, photo_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userEmail || null,
+        nickname || '익명',
+        content || '',
+        finalLocationName,
+        finalLatitude,
+        finalLongitude,
+        imageUrl
+      ]
+    );
+
+    // 피드 등록과 동시에 방문 기록 저장
+    const numericPlaceId = Number(placeId);
+    if (numericPlaceId && !isNaN(numericPlaceId) && userEmail && userEmail !== 'null') {
+      try {
+        const [userExists] = await pool.query('SELECT id FROM users WHERE email = ?', [userEmail]);
+        if (userExists.length > 0) {
+          await pool.query(
+            'INSERT INTO visit_history (user_email, spot_id, visit_date, created_at) VALUES (?, ?, CURDATE(), NOW())',
+            [userEmail, numericPlaceId]
+          );
+          console.log(`[방문 기록 자동 저장] 유저: ${userEmail}, 장소 ID: ${numericPlaceId}`);
+        }
+      } catch (visitErr) {
+        console.log('⚠️ 방문 기록 저장 실패 (피드는 정상 등록):', visitErr.message);
+      }
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "리뷰 등록 성공!",
+      id: result.insertId,
+      image: imageUrl
+    });
   } catch (error) {
-    console.error('코스 등록 중 에러 발생:', error);
-    res.status(500).json({ message: '서버 에러가 발생했습니다.' });
+    console.error("❌ [POST /feeds] 치명적 서버 에러:", error);
+    return res.status(500).json({ success: false, message: "서버 에러가 발생했습니다." });
+  }
+});
+
+// 피드 수정
+app.put('/feeds/:id', async (req, res) => {
+  const { id } = req.params;
+  const { content, userEmail } = req.body;
+  try {
+    const [result] = await pool.query(
+      'UPDATE posts SET content = ? WHERE id = ?',
+      [content, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: '수정할 피드를 찾을 수 없습니다.' });
+    }
+    return res.status(200).json({ success: true, message: '피드가 수정되었습니다.' });
+  } catch (error) {
+    console.error('❌ [PUT /feeds] DB 에러:', error);
+    return res.status(500).json({ success: false, message: '서버 에러' });
+  }
+});
+
+// 피드 삭제
+app.delete('/feeds/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [result] = await pool.query('DELETE FROM posts WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: '삭제할 피드를 찾을 수 없습니다.' });
+    }
+    return res.status(200).json({ success: true, message: '피드가 삭제되었습니다.' });
+  } catch (error) {
+    console.error('❌ [DELETE /feeds] DB 에러:', error);
+    return res.status(500).json({ success: false, message: '서버 에러' });
   }
 });
 
 
-app.get('/', (req, res) => {
-    res.send('Star_Spot 백엔드 서버가 가동 중입니다.');
-});
-
-// 4. 서버 실행 및 IP 출력
+// ==========================================
+// 5. 서버 가동 및 IP 터미널 출력
+// ==========================================
 const PORT = 5000;
 
 function getLocalIp() {
