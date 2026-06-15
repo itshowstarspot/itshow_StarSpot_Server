@@ -384,7 +384,35 @@ app.post('/api/courses', async (req, res) => {
   }
 });
 
-// 3. 코스 삭제 API
+// 3. 코스 단건 조회 API (공유 링크용)
+app.get('/api/courses/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [courses] = await pool.query(
+      'SELECT id, title, idol_id AS idolId, user_email AS userEmail, created_at AS createdAt FROM courses WHERE id = ?',
+      [id]
+    );
+    if (courses.length === 0) {
+      return res.status(404).json({ success: false, message: '코스를 찾을 수 없어요.' });
+    }
+    const course = courses[0];
+    const [spots] = await pool.query(
+      `SELECT s.id, s.place_name AS name, s.address, s.latitude AS lat, s.longitude AS lng
+       FROM course_spots cs
+       JOIN spots s ON cs.spot_id = s.id
+       WHERE cs.course_id = ?
+       ORDER BY cs.sequence_order ASC`,
+      [id]
+    );
+    course.places = spots;
+    return res.status(200).json({ success: true, data: course });
+  } catch (error) {
+    console.error('❌ 코스 단건 조회 에러:', error);
+    return res.status(500).json({ success: false, message: '서버 에러가 발생했습니다.' });
+  }
+});
+
+// 4. 코스 삭제 API
 app.delete('/api/courses/:id', async (req, res) => {
   const { id } = req.params;
   console.log(`[코스 삭제 시도] 삭제할 코스 ID: ${id}`);
