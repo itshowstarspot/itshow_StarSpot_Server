@@ -299,6 +299,225 @@ app.get('/api/courses', async (req, res) => {
   }
 });
 
+// 코스 수정 API 추가 (PUT /api/courses/:id)
+const getCourseById = async (courseId, db = pool) => {
+  const [courses] = await db.query(
+    `SELECT
+      id,
+      title,
+      idol_id AS idolId,
+      user_email AS userEmail,
+      created_at AS createdAt
+     FROM courses
+     WHERE id = ?`,
+    [courseId]
+  );
+
+  if (courses.length === 0) {
+    return null;
+  }
+
+  const course = courses[0];
+  const [spots] = await db.query(
+    `SELECT
+      s.id,
+      s.place_name AS name,
+      s.address,
+      s.category,
+      s.latitude AS lat,
+      s.longitude AS lng,
+      s.description,
+      s.image_url AS imageUrl
+     FROM course_spots cs
+     JOIN spots s ON cs.spot_id = s.id
+     WHERE cs.course_id = ?
+     ORDER BY cs.sequence_order ASC`,
+    [courseId]
+  );
+
+  course.places = spots;
+  course.spotsCount = spots.length;
+  return course;
+};
+
+app.post('/api/courses/:id/update', async (req, res) => {
+  const courseId = req.params.id;
+  const { title, spotIds, places } = req.body;
+
+  console.log(`[코스 수정 요청] 코스 ID: ${courseId}, 새 제목: ${title}`);
+
+  let finalSpotIds = [];
+  if (Array.isArray(spotIds)) {
+    finalSpotIds = spotIds;
+  } else if (Array.isArray(places)) {
+    finalSpotIds = places.map(p => p.id).filter(Boolean);
+  }
+
+  if (!title || title.trim() === '') {
+    return res.status(400).json({ error: '코스 제목은 필수입니다.' });
+  }
+
+  if (finalSpotIds.length < 2) {
+    return res.status(400).json({ error: '코스는 최소 2개 이상의 장소가 필요합니다.' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const updateCourseQuery = `UPDATE courses SET title = ? WHERE id = ?`;
+    const [updateResult] = await connection.query(updateCourseQuery, [title, courseId]);
+
+    if (updateResult.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: '코스를 찾을 수 없습니다.' });
+    }
+
+    const deleteSpotsQuery = `DELETE FROM course_spots WHERE course_id = ?`;
+    await connection.query(deleteSpotsQuery, [courseId]);
+
+    const insertSpotQuery = `
+      INSERT INTO course_spots (course_id, spot_id, sequence_order) 
+      VALUES (?, ?, ?)
+    `;
+    for (let i = 0; i < finalSpotIds.length; i++) {
+      await connection.query(insertSpotQuery, [courseId, finalSpotIds[i], i + 1]);
+    }
+
+    const updatedCourse = await getCourseById(courseId, connection);
+    await connection.commit();
+    return res.status(200).json({
+      success: true,
+      message: '코스가 성공적으로 수정되었습니다.',
+      course: updatedCourse,
+      data: updatedCourse
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error('❌ 코스 수정 DB 처리 중 에러 발생:', error);
+    return res.status(500).json({ error: '코스 수정 중 서버 에러가 발생했습니다.' });
+  } finally {
+    connection.release(); // 연결 반환
+  }
+});
+
+app.post('/api/courses-update-bypass/:id', async (req, res) => {
+  const courseId = req.params.id;
+  const { title, spotIds, places } = req.body;
+
+  console.log(`[🚀 우회 포스트 수정 요청] 코스 ID: ${courseId}, 새 제목: ${title}`);
+
+  let finalSpotIds = [];
+  if (Array.isArray(spotIds)) {
+    finalSpotIds = spotIds;
+  } else if (Array.isArray(places)) {
+    finalSpotIds = places.map(p => p.id).filter(Boolean);
+  }
+
+  if (!title || title.trim() === '') {
+    return res.status(400).json({ error: '코스 제목은 필수입니다.' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const updateCourseQuery = `UPDATE courses SET title = ? WHERE id = ?`;
+    const [updateResult] = await connection.query(updateCourseQuery, [title, courseId]);
+
+    if (updateResult.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: '코스를 찾을 수 없습니다.' });
+    }
+
+    const deleteSpotsQuery = `DELETE FROM course_spots WHERE course_id = ?`;
+    await connection.query(deleteSpotsQuery, [courseId]);
+
+    const insertSpotQuery = `
+      INSERT INTO course_spots (course_id, spot_id, sequence_order) 
+      VALUES (?, ?, ?)
+    `;
+    for (let i = 0; i < finalSpotIds.length; i++) {
+      await connection.query(insertSpotQuery, [courseId, finalSpotIds[i], i + 1]);
+    }
+
+    const updatedCourse = await getCourseById(courseId, connection);
+    await connection.commit();
+    return res.status(200).json({
+      success: true,
+      message: '코스가 성공적으로 수정되었습니다.',
+      course: updatedCourse,
+      data: updatedCourse
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error('❌ 우회 코스 수정 에러:', error);
+    return res.status(500).json({ error: '서버 에러 발생' });
+  } finally {
+    connection.release();
+  }
+});
+
+app.put('/api/courses/:id', async (req, res) => {
+  const courseId = req.params.id;
+  const { title, spotIds, places } = req.body;
+
+  console.log(`[🚨 404 구출 - PUT 수정 요청] 코스 ID: ${courseId}, 새 제목: ${title}`);
+
+  let finalSpotIds = [];
+  if (Array.isArray(spotIds)) {
+    finalSpotIds = spotIds;
+  } else if (Array.isArray(places)) {
+    finalSpotIds = places.map(p => p.id).filter(Boolean);
+  }
+
+  if (!title || title.trim() === '') {
+    return res.status(400).json({ error: '코스 제목은 필수입니다.' });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // 1. 코스 제목 업데이트
+    const updateCourseQuery = `UPDATE courses SET title = ? WHERE id = ?`;
+    const [updateResult] = await connection.query(updateCourseQuery, [title, courseId]);
+
+    if (updateResult.affectedRows === 0) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: '코스를 찾을 수 없습니다.' });
+    }
+
+    // 2. 기존 코스 장소 매핑 삭제
+    const deleteSpotsQuery = `DELETE FROM course_spots WHERE course_id = ?`;
+    await connection.query(deleteSpotsQuery, [courseId]);
+
+    // 3. 새로운 코스 장소 매핑 순서대로 삽입
+    const insertSpotQuery = `
+      INSERT INTO course_spots (course_id, spot_id, sequence_order) 
+      VALUES (?, ?, ?)
+    `;
+    for (let i = 0; i < finalSpotIds.length; i++) {
+      await connection.query(insertSpotQuery, [courseId, finalSpotIds[i], i + 1]);
+    }
+
+    const updatedCourse = await getCourseById(courseId, connection);
+    await connection.commit();
+    return res.status(200).json({
+      success: true,
+      message: '코스가 성공적으로 수정되었습니다.',
+      course: updatedCourse,
+      data: updatedCourse
+    });
+  } catch (error) {
+    await connection.rollback();
+    console.error('❌ PUT 코스 수정 중 DB 에러 발생:', error);
+    return res.status(500).json({ error: '코스 수정 중 서버 에러가 발생했습니다.' });
+  } finally {
+    connection.release();
+  }
+});
+
 // 2. 코스 등록 API (title 및 idol_id 완벽 연동)
 app.post('/api/courses', async (req, res) => {
   const connection = await pool.getConnection();
