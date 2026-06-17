@@ -46,6 +46,68 @@ const pool = mysql.createPool({
   }
 })();
 
+// 카카오 REST 키 로테이션
+const kakaoKeys = (process.env.KAKAO_REST_API_KEY || '')
+  .split(',').map(k => k.trim()).filter(Boolean);
+let kakaoKeyIdx = 0;
+
+async function kakaoGet(url, params) {
+  const total = kakaoKeys.length;
+  if (total === 0) throw new Error('카카오 REST 키가 없습니다');
+  for (let i = 0; i < total; i++) {
+    const key = kakaoKeys[(kakaoKeyIdx + i) % total];
+    try {
+      const res = await axios.get(url, {
+        headers: { Authorization: `KakaoAK ${key}` },
+        params,
+      });
+      kakaoKeyIdx = (kakaoKeyIdx + i + 1) % total;
+      return res.data;
+    } catch (err) {
+      const status = err.response?.status;
+      if ((status === 429 || status === 403 || status === 401) && i < total - 1) {
+        console.warn(`카카오 키 [${i}] 실패(${status}), 다음 키로 전환`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('모든 카카오 키 사용량 초과');
+}
+
+// 카카오 차량 경로 프록시
+app.get('/api/kakao/directions', async (req, res) => {
+  try {
+    const data = await kakaoGet('https://apis-navi.kakaomobility.com/v1/directions', req.query);
+    res.json(data);
+  } catch (err) {
+    console.error('카카오 경로 프록시 에러:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ error: '카카오 경로 API 실패' });
+  }
+});
+
+// 카카오 키워드 검색 프록시
+app.get('/api/kakao/search/keyword', async (req, res) => {
+  try {
+    const data = await kakaoGet('https://dapi.kakao.com/v2/local/search/keyword.json', req.query);
+    res.json(data);
+  } catch (err) {
+    console.error('카카오 검색 프록시 에러:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ error: '카카오 검색 API 실패' });
+  }
+});
+
+// 좌표 → 주소 변환 프록시
+app.get('/api/kakao/geo/coord2address', async (req, res) => {
+  try {
+    const data = await kakaoGet('https://dapi.kakao.com/v2/local/geo/coord2address.json', req.query);
+    res.json(data);
+  } catch (err) {
+    console.error('카카오 주소변환 프록시 에러:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ error: '카카오 주소변환 API 실패' });
+  }
+});
+
 // 글로벌 pool 바인딩 (외부 라우터인 userRoute 등에서 쓸 수 있도록 최적화)
 app.set('pool', pool);
 
@@ -267,13 +329,18 @@ app.get('/api/courses', async (req, res) => {
         user_email AS userEmail,
         created_at AS createdAt
       FROM courses
-      WHERE (idol_id = ? OR idol_id IS NULL OR ? = 'all')
+      WHERE 1=1
     `;
-    const params = [idolId, idolId];
+    const params = [];
 
     if (userEmail) {
+      // 내 코스: 이메일 기준으로만 조회 (아이돌 무관하게 내 코스 전체 표시)
       query += ` AND user_email = ?`;
       params.push(userEmail);
+    } else {
+      // 비로그인 or 공개 조회: 아이돌 필터 적용
+      query += ` AND (idol_id = ? OR idol_id IS NULL OR ? = 'all')`;
+      params.push(idolId, idolId);
     }
 
     query += ` ORDER BY created_at DESC`;
@@ -807,22 +874,33 @@ app.post('/api/transit/routes', async (req, res) => {
             }
         );
 
-        const plan = response.data.metaData.plan;
-        const itinery = plan.itineraries[0]; 
+        const plan = response.data.metaData?.plan;
+        const itineraries = plan?.itineraries;
+        if (!itineraries || itineraries.length === 0) {
+            return res.status(404).json({ error: "경로를 찾을 수 없습니다." });
+        }
+        const itinery = itineraries[0];
+
+        const fare = itinery.fare?.regular?.totalFare
+            ?? itinery.fare?.intercity?.totalFare
+            ?? 0;
 
         const summary = {
-            totalTime: Math.round(itinery.totalTime / 60) + "분",
-            totalFare: itinery.fare.regular.totalFare + "원",
+            totalTime: Math.round(itinery.totalTime / 60),
+            totalFare: fare,
             path: itinery.legs.map(leg => {
-                const time = Math.round(leg.sectionTime / 60); 
-                const destination = leg.end.name;
+                const time = Math.round(leg.sectionTime / 60);
+                const destination = leg.end?.name || "";
 
                 if (leg.mode === "WALK") {
                     return `🚶 도보 ${time}분 (${destination}까지)`;
                 } else if (leg.mode === "BUS") {
-                    return `🚍 ${leg.route} 이용 | ${time}분 소요 (${leg.passStopList.stations.length}개 정류장 이동, ${destination} 하차)`;
+                    const stops = leg.passStopList?.stations?.length || 0;
+                    return `🚍 ${leg.route} 이용 | ${time}분 소요 (${stops}개 정류장, ${destination} 하차)`;
                 } else if (leg.mode === "SUBWAY") {
                     return `🚇 ${leg.route} 이용 | ${time}분 소요 (${destination} 하차)`;
+                } else if (leg.mode === "TRAIN" || leg.mode === "EXPRESSBUS") {
+                    return `🚄 ${leg.route || leg.mode} | ${time}분 소요 (${destination} 하차)`;
                 }
                 return `${leg.mode} | ${time}분 소요`;
             })
@@ -833,6 +911,49 @@ app.post('/api/transit/routes', async (req, res) => {
     } catch (error) {
         console.error("티맵 호출 에러:", error.message);
         res.status(500).json({ error: "티맵 API 연결 실패" });
+    }
+});
+
+// T-Map 차량 경로 API (카카오 모빌리티 할당량 초과 시 폴백)
+app.post('/api/car/routes', async (req, res) => {
+    try {
+        const { startX, startY, endX, endY, passList } = req.body;
+        const body = {
+            startX: String(startX),
+            startY: String(startY),
+            endX: String(endX),
+            endY: String(endY),
+            reqCoordType: 'WGS84GEO',
+            resCoordType: 'WGS84GEO',
+            searchOption: '0',
+        };
+        if (passList) body.passList = passList;
+
+        const response = await axios.post(
+            'https://apis.openapi.sk.com/tmap/routes',
+            body,
+            { headers: { appKey: process.env.TMAP_APPKEY } }
+        );
+
+        const features = response.data.features || [];
+        const summaryFeature = features.find(f => f.geometry.type === 'Point' && f.properties.totalDistance != null);
+        const totalDistance = summaryFeature?.properties?.totalDistance || 0;
+        const totalTime = summaryFeature?.properties?.totalTime || 0;
+        const totalFare = summaryFeature?.properties?.taxiFare || 0;
+
+        const linePath = [];
+        features.forEach(f => {
+            if (f.geometry.type === 'LineString') {
+                f.geometry.coordinates.forEach(([lng, lat]) => {
+                    linePath.push({ lng, lat });
+                });
+            }
+        });
+
+        res.json({ totalDistance, totalTime, totalFare, linePath });
+    } catch (error) {
+        console.error('T-Map 차량 경로 에러:', error.response?.data || error.message);
+        res.status(500).json({ error: 'T-Map 차량 API 실패' });
     }
 });
 
