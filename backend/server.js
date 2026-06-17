@@ -208,7 +208,7 @@ app.get('/api/courses', async (req, res) => {
   if (isRecommended) {
     const IDOL_NAME_MAP = {
       jungkook:   { memberName: '정국',  displayName: '정국' },
-      bangjeemin: { memberName: '방지민', displayName: '방지민' },
+      jimin_bang: { memberName: '방지민', displayName: '방지민' },
       karina:     { memberName: '카리나', displayName: '카리나' },
       youngk:     { memberName: '영케이', displayName: '영케이' },
       leeyoungji: { groupName:  '이영지', displayName: '이영지' },
