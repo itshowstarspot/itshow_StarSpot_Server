@@ -204,44 +204,55 @@ app.get('/api/courses', async (req, res) => {
   
   console.log(`[코스 목록 조회] 요청된 아이돌 ID: ${idolId}, 추천코스여부: ${isRecommended}`);
 
-  // ── 🌟 [추천 코스 분기] 프론트엔드가 기대하는 고정 추천 데이터 반환 ──
+  // ── 🌟 [추천 코스 분기] DB spots에서 아이돌별 동적 생성 ──
   if (isRecommended) {
-    const RECOMMENDED_COURSES = [
-      {
-        id: 'rec-jk-1',
-        title: '정국 강남 맛집 투어',
-        idolId: 'jungkook',
-        isRecommended: true,
-        description: '정국이 멤버들과 자주 찾던 강남 식당들을 따라가보세요',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        spotsCount: 3,
-        places: [
-          { id: 2, name: '우돈청', address: '서울특별시 강남구 언주로 170길 37', category: '음식점', lat: 37.52661, lng: 127.0367, description: '정국이 구칠즈 멤버들과 함께 식사한 곳' },
-          { id: 3, name: '꽃새우 영번지 역삼점', address: '서울특별시 강남구 언주로 536', category: '음식점', lat: 37.50619, lng: 127.0413, description: '정국이 왔다간 해산물요리 전문점' },
-          { id: 1, name: '개미마을', address: '서울특별시 강남구', category: '음식점', lat: 37.506, lng: 127.042, description: '방문 스팟' }
-        ],
-      },
-      {
-        id: 'rec-jk-2',
-        title: '정국 이태원 코스',
-        idolId: 'jungkook',
-        isRecommended: true,
-        description: '이태원에서 정국의 발자취를 따라가보세요',
-        createdAt: '2026-01-02T00:00:00.000Z',
-        spotsCount: 2,
-        places: [
-          { id: 2, name: '우돈청', address: '서울특별시 강남구 언주로 170길 37', category: '음식점', lat: 37.52661, lng: 127.0367, description: '정국이 구칠즈 멤버들과 함께 식사한 곳' },
-          { id: 3, name: '꽃새우 영번지 역삼점', address: '서울특별시 강남구 언주로 536', category: '음식점', lat: 37.50619, lng: 127.0413, description: '정국이 왔다간 해산물요리 전문점' }
-        ],
-      },
-    ];
+    const IDOL_NAME_MAP = {
+      jungkook:   { memberName: '정국',  displayName: '정국' },
+      bangjeemin: { memberName: '방지민', displayName: '방지민' },
+      karina:     { memberName: '카리나', displayName: '카리나' },
+      youngk:     { memberName: '영케이', displayName: '영케이' },
+      leeyoungji: { groupName:  '이영지', displayName: '이영지' },
+    };
 
-    // 현재 선택된 아이돌 ID에 맞게 필터링해서 던져줍니다.
-    const filteredRecommended = idolId && idolId !== 'all'
-      ? RECOMMENDED_COURSES.filter((c) => c.idolId === idolId)
-      : RECOMMENDED_COURSES;
+    try {
+      const idolsToQuery = (idolId && idolId !== 'all')
+        ? [idolId]
+        : Object.keys(IDOL_NAME_MAP);
 
-    return res.status(200).json(filteredRecommended);
+      const recommendedCourses = [];
+
+      for (const iid of idolsToQuery) {
+        const mapping = IDOL_NAME_MAP[iid];
+        if (!mapping) continue;
+
+        let spotQuery, spotParams;
+        if (mapping.memberName) {
+          spotQuery = `SELECT id, place_name AS name, address, category, latitude AS lat, longitude AS lng, description
+                       FROM spots WHERE member_name = ? LIMIT 5`;
+          spotParams = [mapping.memberName];
+        } else {
+          spotQuery = `SELECT id, place_name AS name, address, category, latitude AS lat, longitude AS lng, description
+                       FROM spots WHERE group_name = ? AND member_name IS NULL LIMIT 5`;
+          spotParams = [mapping.groupName];
+        }
+
+        const [spots] = await pool.query(spotQuery, spotParams);
+        if (spots.length < 2) continue;
+
+        recommendedCourses.push({
+          id: `rec-${iid}-1`,
+          title: `${mapping.displayName} 성지 코스`,
+          idolId: iid,
+          isRecommended: true,
+          places: spots,
+        });
+      }
+
+      return res.status(200).json(recommendedCourses);
+    } catch (err) {
+      console.error('[추천 코스 조회 오류]', err);
+      return res.status(500).json([]);
+    }
   }
 
   // ── 🏠 [일반 내 코스 분기] DB에서 실시간 저장 데이터 조회 ──
